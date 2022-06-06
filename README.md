@@ -18,7 +18,11 @@ It's true that we can get all data via binary analysis of all Node.JS applicatio
 
 ## Usage
 
-To use the tool, clone the repository and run `yarn start --file ./path-to-exe --type pkg`.
+To use the tool, clone the repository and run `yarn && yarn start --file ./path-to-exe --type pkg`.
+(This will install dependencies and run hooker)
+
+After hooking the executable, you can just run it to extract files.
+It's dead simple, but dynamic.
 
 ## LICENSE
 
