@@ -1,103 +1,78 @@
 export const statics = {
   // All copyrights are reserved to vercel/pkg authors.
-  // > https://github.com/vercel/pkg/blob/main/prelude/diagnostic.js
-  prelude: `/* eslint-disable global-require */
-/* eslint-disable no-console */
-/* global DICT */
+  // > https://github.com/vercel/pkg/blob/main/prelude/bootstrap.js
+  prelude: `// /////////////////////////////////////////////////////////////////
+// PATCH PROCESS ///////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////
+(() => {
+  const ancestor = {
+    dlopen: process.dlopen,
+  };
 
-'use strict';
-
-(function installDiagnostic() {
-  const fs = require('fs');
-  const path = require('path');
-  const win32 = process.platform === 'win32';
-
-  if (process.env.DEBUG_PKG === '2') {
-    console.log(Object.entries(DICT));
+  function revertMakingLong(f) {
+    if (/^\\\\\\\\\\?\\\\/.test(f)) return f.slice(4);
+    return f;
   }
-  function dumpLevel(filename, level, tree) {
-    let totalSize = 0;
-    const d = fs.readdirSync(filename);
-    for (let j = 0; j < d.length; j += 1) {
-      const f = path.join(filename, d[j]);
-      const realPath = fs.realpathSync(f);
-      const isSymbolicLink2 = f !== realPath;
 
-      const s = fs.statSync(f);
-      totalSize += s.size;
+  process.dlopen = function dlopen() {
+    const args = cloneArgs(arguments);
+    const modulePath = revertMakingLong(args[1]);
+    const moduleBaseName = path.basename(modulePath);
+    const moduleFolder = path.dirname(modulePath);
 
-      if (s.isDirectory() && !isSymbolicLink2) {
-        const tree1 = [];
-        totalSize += dumpLevel(f, level + 1, tree1);
-        const str =
-          (' '.padStart(level * 2, ' ') + d[j]).padEnd(40, ' ') +
-          (totalSize.toString().padStart(10, ' ') +
-            (isSymbolicLink2 ? \`=> \${realPath}\` : ' '));
-        tree.push(str);
-        tree1.forEach((x) => tree.push(x));
+    if (insideSnapshot(modulePath)) {
+      const moduleContent = fs.readFileSync(modulePath);
+
+      // Node addon files and .so cannot be read with fs directly, they are loaded with process.dlopen which needs a filesystem path
+      // we need to write the file somewhere on disk first and then load it
+      // the hash is needed to be sure we reload the module in case it changes
+      const hash = createHash('sha256').update(moduleContent).digest('hex');
+
+      // Example: /tmp/pkg/<hash>
+      const tmpFolder = path.join(tmpdir(), 'pkg', hash);
+
+      createDirRecursively(tmpFolder);
+
+      // Example: moduleFolder = /snapshot/appname/node_modules/sharp/build/Release
+      const parts = moduleFolder.split(path.sep);
+      const mIndex = parts.indexOf('node_modules') + 1;
+
+      let newPath;
+
+      // it's a node addon file contained in node_modules folder
+      // we copy the entire module folder in tmp folder
+      if (mIndex > 0) {
+        // Example: modulePackagePath = sharp/build/Release
+        const modulePackagePath = parts.slice(mIndex).join(path.sep);
+        // Example: modulePkgFolder = /snapshot/appname/node_modules/sharp
+        const modulePkgFolder = parts.slice(0, mIndex + 1).join(path.sep);
+
+        // here we copy all files from the snapshot module folder to temporary folder
+        // we keep the module folder structure to prevent issues with modules that are statically
+        // linked using relative paths (Fix #1075)
+        copyFolderRecursiveSync(modulePkgFolder, tmpFolder);
+
+        // Example: /tmp/pkg/<hash>/sharp/build/Release/sharp.node
+        newPath = path.join(tmpFolder, modulePackagePath, moduleBaseName);
       } else {
-        const str =
-          (' '.padStart(level * 2, ' ') + d[j]).padEnd(40, ' ') +
-          (s.size.toString().padStart(10, ' ') +
-            (isSymbolicLink2 ? \`=> \${realPath}\` : ' '));
-        tree.push(str);
+        const tmpModulePath = path.join(tmpFolder, moduleBaseName);
+
+        if (!fs.existsSync(tmpModulePath)) {
+          fs.copyFileSync(modulePath, tmpModulePath);
+        }
+
+        // load the copied file in the temporary folder
+        newPath = tmpModulePath;
       }
-    }
-    return totalSize;
-  }
-  function wrap(obj, name) {
-    const f = fs[name];
-    obj[name] = (...args) => {
-      const args1 = Object.values(args);
-      console.log(
-        \`fs.\${name}\`,
-        args1.filter((x) => typeof x === 'string')
-      );
-      return f.apply(this, args1);
-    };
-  }
-  if (process.env.DEBUG_PKG) {
-    console.log('------------------------------- virtual file system');
-    const startFolder = win32 ? 'C:\\\\snapshot' : '/snapshot';
-    console.log(startFolder);
 
-    const tree = [];
-    const totalSize = dumpLevel(startFolder, 1, tree);
-    console.log(tree.join('\\n'));
-
-    console.log('Total size = ', totalSize);
-    if (process.env.DEBUG_PKG === '2') {
-      wrap(fs, 'openSync');
-      wrap(fs, 'open');
-      wrap(fs, 'readSync');
-      wrap(fs, 'read');
-      wrap(fs, 'writeSync');
-      wrap(fs, 'write');
-      wrap(fs, 'closeSync');
-      wrap(fs, 'readFileSync');
-      wrap(fs, 'close');
-      wrap(fs, 'readFile');
-      wrap(fs, 'readdirSync');
-      wrap(fs, 'readdir');
-      wrap(fs, 'realpathSync');
-      wrap(fs, 'realpath');
-      wrap(fs, 'statSync');
-      wrap(fs, 'stat');
-      wrap(fs, 'lstatSync');
-      wrap(fs, 'lstat');
-      wrap(fs, 'fstatSync');
-      wrap(fs, 'fstat');
-      wrap(fs, 'existsSync');
-      wrap(fs, 'exists');
-      wrap(fs, 'accessSync');
-      wrap(fs, 'access');
+      // replace the path with the new module path
+      args[1] = newPath;
     }
-  }
-})();
-`,
+
+    return ancestor.dlopen.apply(process, args);
+  };
+})();`,
   hook: `(async function installHooker() {
-  const fs = require('fs')
-  const path = require('path')
   const win32 = process.platform === 'win32'
   const base = win32 ? 'C:\\\\snapshot' : '/snapshot'
 
@@ -122,7 +97,7 @@ export const statics = {
 
   await dump()
   process.exit(0)
-})();//
+})();
 `
 }
 
