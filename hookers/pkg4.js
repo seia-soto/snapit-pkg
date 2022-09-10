@@ -2,73 +2,135 @@ export const statics = {
   // All copyrights are reserved to vercel/pkg authors.
   // > https://github.com/vercel/pkg/blob/main/prelude/bootstrap.js
   prelude: `// /////////////////////////////////////////////////////////////////
-  // PATCH PROCESS ///////////////////////////////////////////////////
-  // /////////////////////////////////////////////////////////////////
-  (() => {
-    const fs = require('fs');
-    var ancestor = {};
-    ancestor.dlopen = process.dlopen;
-  
-    function revertMakingLong(f) {
-      if (/^\\\\\\\\\\?\\\\/.test(f)) return f.slice(4);
-      return f;
+// PATCH CHILD_PROCESS /////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////
+
+(function () {
+  var childProcess = require('child_process');
+  var ancestor = {};
+  ancestor.spawn = childProcess.spawn;
+  ancestor.spawnSync = childProcess.spawnSync;
+  ancestor.execFile = childProcess.execFile;
+  ancestor.execFileSync = childProcess.execFileSync;
+  ancestor.exec = childProcess.exec;
+  ancestor.execSync = childProcess.execSync;
+
+  function setOptsEnv (args) {
+    var pos = args.length - 1;
+    if (typeof args[pos] === 'function') pos -= 1;
+    if (typeof args[pos] !== 'object' || Array.isArray(args[pos])) {
+      pos += 1;
+      args.splice(pos, 0, {});
     }
-  
-    process.dlopen = function dlopen() {
-      const args = cloneArgs(arguments);
-      const modulePath = revertMakingLong(args[1]);
-      const moduleDirname = require('path').dirname(modulePath);
-      if (insideSnapshot(modulePath)) {
-        // Node addon files and .so cannot be read with fs directly, they are loaded with process.dlopen which needs a filesystem path
-        // we need to write the file somewhere on disk first and then load it
-        const moduleContent = fs.readFileSync(modulePath);
-        const moduleBaseName = require('path').basename(modulePath);
-        const hash = require('crypto')
-          .createHash('sha256')
-          .update(moduleContent)
-          .digest('hex');
-        const tmpModulePath = \`\${require('os').tmpdir()}/\${hash}_\${moduleBaseName}\`;
-        try {
-          fs.statSync(tmpModulePath);
-        } catch (e) {
-          // Most likely this means the module is not on disk yet
-          fs.writeFileSync(tmpModulePath, moduleContent, { mode: 0o444 });
-        }
-        args[1] = tmpModulePath;
+    var opts = args[pos];
+    if (!opts.env) opts.env = require('util')._extend({}, process.env);
+    if (opts.env.PKG_EXECPATH === 'PKG_INVOKE_NODEJS') return;
+    opts.env.PKG_EXECPATH = EXECPATH;
+  }
+
+  function startsWith2 (args, index, name, impostor) {
+    var qsName = '"' + name + ' ';
+    if (args[index].slice(0, qsName.length) === qsName) {
+      args[index] = '"' + impostor + ' ' + args[index].slice(qsName.length);
+      return true;
+    }
+    var sName = name + ' ';
+    if (args[index].slice(0, sName.length) === sName) {
+      args[index] = impostor + ' ' + args[index].slice(sName.length);
+      return true;
+    }
+    if (args[index] === name) {
+      args[index] = impostor;
+      return true;
+    }
+    return false;
+  }
+
+  function startsWith (args, index, name) {
+    var qName = '"' + name + '"';
+    var qEXECPATH = '"' + EXECPATH + '"';
+    var jsName = JSON.stringify(name);
+    var jsEXECPATH = JSON.stringify(EXECPATH);
+    return startsWith2(args, index, name, EXECPATH) ||
+           startsWith2(args, index, qName, qEXECPATH) ||
+           startsWith2(args, index, jsName, jsEXECPATH);
+  }
+
+  function modifyLong (args, index) {
+    if (!args[index]) return;
+    return (startsWith(args, index, 'node') ||
+            startsWith(args, index, ARGV0) ||
+            startsWith(args, index, ENTRYPOINT) ||
+            startsWith(args, index, EXECPATH));
+  }
+
+  function modifyShort (args) {
+    if (!args[0]) return;
+    if (!Array.isArray(args[1])) {
+      args.splice(1, 0, []);
+    }
+    if (args[0] === 'node' ||
+        args[0] === ARGV0 ||
+        args[0] === ENTRYPOINT ||
+        args[0] === EXECPATH) {
+      args[0] = EXECPATH;
+      if (NODE_VERSION_MAJOR === 0) {
+        args[1] = args[1].filter(function (a) {
+          return (a.slice(0, 13) !== '--debug-port=');
+        });
       }
-  
-      const unknownModuleErrorRegex = /([^:]+): cannot open shared object file: No such file or directory/;
-      const tryImporting = function tryImporting(previousErrorMessage) {
-        try {
-          const res = ancestor.dlopen.apply(process, args);
-          return res;
-        } catch (e) {
-          if (e.message === previousErrorMessage) {
-            // we already tried to fix this and it didn't work, give up
-            throw e;
-          }
-          if (e.message.match(unknownModuleErrorRegex)) {
-            // some modules are packaged with dynamic linking and needs to open other files that should be in
-            // the same directory, in this case, we write this file in the same /tmp directory and try to
-            // import the module again
-            const moduleName = e.message.match(unknownModuleErrorRegex)[1];
-            const importModulePath = \`\${moduleDirname}/\${moduleName}\`;
-            const moduleContent = fs.readFileSync(importModulePath);
-            const moduleBaseName = require('path').basename(importModulePath);
-            const tmpModulePath = \`\${require('os').tmpdir()}/\${moduleBaseName}\`;
-            try {
-              fs.statSync(tmpModulePath);
-            } catch (err) {
-              fs.writeFileSync(tmpModulePath, moduleContent, { mode: 0o444 });
-            }
-            return tryImporting(e.message);
-          }
-          throw e;
+    } else {
+      for (var i = 1; i < args[1].length; i += 1) {
+        var mbc = args[1][i - 1];
+        if (mbc === '-c' || mbc === '/c') {
+          modifyLong(args[1], i);
         }
-      };
-      tryImporting();
-    };
-  })();`,
+      }
+    }
+  }
+
+  childProcess.spawn = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyShort(args);
+    return ancestor.spawn.apply(childProcess, args);
+  };
+
+  childProcess.spawnSync = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyShort(args);
+    return ancestor.spawnSync.apply(childProcess, args);
+  };
+
+  childProcess.execFile = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyShort(args);
+    return ancestor.execFile.apply(childProcess, args);
+  };
+
+  childProcess.execFileSync = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyShort(args);
+    return ancestor.execFileSync.apply(childProcess, args);
+  };
+
+  childProcess.exec = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyLong(args, 0);
+    return ancestor.exec.apply(childProcess, args);
+  };
+
+  childProcess.execSync = function () {
+    var args = cloneArgs(arguments);
+    setOptsEnv(args);
+    modifyLong(args, 0);
+    return ancestor.execSync.apply(childProcess, args);
+  };
+}());`,
   hook: `(async function installHooker() {
   const win32 = process.platform === 'win32'
   const base = win32 ? 'C:\\\\snapshot' : '/snapshot'
