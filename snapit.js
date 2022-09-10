@@ -34,4 +34,17 @@ switch (cli.options.type) {
 
     break
   }
+  case 'pkg4': {
+    const mod = await import('./hookers/pkg4.js')
+
+    if (!mod.isSupported(file)) {
+      throw new Error('The given binary is not supported!')
+    }
+
+    const patched = mod.patch(file)
+
+    fs.writeFileSync(parsed.options.file + '.patched', patched, 'binary')
+
+    break
+  }
 }
