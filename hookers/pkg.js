@@ -1,5 +1,3 @@
-import * as patcher from '../utils/patcher.js'
-
 export const statics = {
   // All copyrights are reserved to vercel/pkg authors.
   // > https://github.com/vercel/pkg/blob/main/prelude/bootstrap.js
